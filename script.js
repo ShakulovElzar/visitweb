@@ -2,11 +2,33 @@ const canvas = document.getElementById("world");
 const ctx = canvas.getContext("2d");
 const journey = document.querySelector(".journey");
 const rails = [...document.querySelectorAll(".scene-rail li")];
+const sceneRail = document.querySelector(".scene-rail");
 const heroCopy = document.querySelector(".hero-copy");
+const sceneCaption = document.querySelector(".scene-caption");
+const sceneCaptionNumber = sceneCaption.querySelector("span");
+const sceneCaptionTitle = sceneCaption.querySelector("h2");
+const sceneCaptionBody = sceneCaption.querySelector("p");
+const sceneSteps = [...document.querySelectorAll(".scroll-copy article")].map((article) => ({
+  number: article.querySelector("span").textContent,
+  title: article.querySelector("h2").textContent,
+  body: article.querySelector("p").textContent,
+}));
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const backdrop = new Image();
+const serviceCloseup = new Image();
+let activeScene = -1;
 
 backdrop.src = "assets/cafeconnect-alpine-restaurant.png";
+serviceCloseup.src = "assets/cafeconnect-service-closeup.png";
+
+const flightPath = [
+  { at: 0, zoom: 1.04, x: 0, y: 0.1, shade: 0.18 },
+  { at: 0.2, zoom: 1.16, x: -0.03, y: 0.03, shade: 0.22 },
+  { at: 0.42, zoom: 1.46, x: -0.09, y: -0.08, shade: 0.32 },
+  { at: 0.64, zoom: 1.92, x: -0.13, y: -0.2, shade: 0.44 },
+  { at: 0.82, zoom: 2.36, x: -0.02, y: -0.3, shade: 0.56 },
+  { at: 1, zoom: 2.72, x: 0.07, y: -0.36, shade: 0.64 },
+];
 
 const state = {
   w: 0,
@@ -30,6 +52,30 @@ function ease(t) {
   return t * t * (3 - 2 * t);
 }
 
+function easeInOut(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function getFlightCamera(p) {
+  let from = flightPath[0];
+  let to = flightPath[flightPath.length - 1];
+  for (let i = 0; i < flightPath.length - 1; i++) {
+    if (p >= flightPath[i].at && p <= flightPath[i + 1].at) {
+      from = flightPath[i];
+      to = flightPath[i + 1];
+      break;
+    }
+  }
+  const local = easeInOut(clamp((p - from.at) / Math.max(0.001, to.at - from.at)));
+  return {
+    zoom: mix(from.zoom, to.zoom, local),
+    x: mix(from.x, to.x, local),
+    y: mix(from.y, to.y, local),
+    shade: mix(from.shade, to.shade, local),
+    bob: Math.sin(p * Math.PI * 2.6) * 0.006,
+  };
+}
+
 function resize() {
   state.dpr = Math.min(window.devicePixelRatio || 1, 2);
   state.w = window.innerWidth;
@@ -39,6 +85,8 @@ function resize() {
   canvas.style.width = `${state.w}px`;
   canvas.style.height = `${state.h}px`;
   ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 }
 
 function updateScroll() {
@@ -47,7 +95,7 @@ function updateScroll() {
   state.target = clamp(-rect.top / travel);
 }
 
-function drawBackdrop(p) {
+function drawBackdrop(p, camera) {
   const { w, h } = state;
   const gradient = ctx.createLinearGradient(0, 0, 0, h);
   gradient.addColorStop(0, "#9bd6e8");
@@ -57,24 +105,39 @@ function drawBackdrop(p) {
   ctx.fillRect(0, 0, w, h);
 
   if (backdrop.complete && backdrop.naturalWidth) {
-    const zoom = mix(1.08, 1.82, ease(p));
+    const zoom = camera.zoom;
     const imgRatio = backdrop.naturalWidth / backdrop.naturalHeight;
     const viewRatio = w / h;
     let dw = w * zoom;
     let dh = dw / imgRatio;
-    if (dh < h * zoom) {
+    if (dh < h * zoom || imgRatio > viewRatio) {
       dh = h * zoom;
       dw = dh * imgRatio;
     }
-    const x = (w - dw) / 2 + mix(0, -w * 0.1, p) + state.pointerX * 18;
-    const y = (h - dh) / 2 + mix(h * 0.08, -h * 0.18, p) + state.pointerY * 10;
-    ctx.globalAlpha = mix(0.78, 0.48, p);
+    const x = (w - dw) / 2 + w * camera.x + state.pointerX * mix(8, 22, p);
+    const y = (h - dh) / 2 + h * (camera.y + camera.bob) + state.pointerY * mix(5, 12, p);
+    ctx.globalAlpha = mix(0.9, 0.58, ease(clamp((p - 0.72) / 0.28)));
     ctx.drawImage(backdrop, x, y, dw, dh);
     ctx.globalAlpha = 1;
   }
 
-  ctx.fillStyle = `rgba(12, 24, 18, ${mix(0.2, 0.62, p)})`;
+  ctx.fillStyle = `rgba(12, 24, 18, ${camera.shade})`;
   ctx.fillRect(0, 0, w, h);
+}
+
+function drawCoverImage(image, zoom, offsetX, offsetY) {
+  const { w, h } = state;
+  const imgRatio = image.naturalWidth / image.naturalHeight;
+  const viewRatio = w / h;
+  let dw = w * zoom;
+  let dh = dw / imgRatio;
+  if (dh < h * zoom || imgRatio > viewRatio) {
+    dh = h * zoom;
+    dw = dh * imgRatio;
+  }
+  const x = (w - dw) / 2 + w * offsetX;
+  const y = (h - dh) / 2 + h * offsetY;
+  ctx.drawImage(image, x, y, dw, dh);
 }
 
 function mountain(points, color, alpha = 1) {
@@ -88,9 +151,9 @@ function mountain(points, color, alpha = 1) {
   ctx.globalAlpha = 1;
 }
 
-function drawWorldLayers(p) {
+function drawWorldLayers(p, camera) {
   const { w, h } = state;
-  const drift = p * w * 0.32;
+  const drift = (p * 0.32 + camera.x * 0.7) * w;
   mountain(
     [
       [-w * 0.2 - drift * 0.1, h * 0.7],
@@ -114,6 +177,19 @@ function drawWorldLayers(p) {
     0.62
   );
 
+  ctx.globalAlpha = 1 - ease(clamp((p - 0.18) / 0.28));
+  ctx.fillStyle = "rgba(255, 250, 242, 0.38)";
+  for (let i = 0; i < 5; i++) {
+    const cloudT = (i / 5 + p * 0.28) % 1;
+    const cx = mix(-w * 0.15, w * 1.15, cloudT);
+    const cy = h * (0.18 + i * 0.04) + camera.y * h * 0.25;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, w * 0.08, h * 0.018, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx + w * 0.05, cy + h * 0.005, w * 0.06, h * 0.014, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
   ctx.fillStyle = "#1d3b2c";
   ctx.beginPath();
   ctx.moveTo(0, h);
@@ -126,9 +202,10 @@ function drawWorldLayers(p) {
 
 function drawRoad(p) {
   const { w, h } = state;
-  const roadTop = mix(h * 0.58, h * 0.42, p);
-  const roadWide = mix(w * 0.08, w * 1.22, p);
-  const roadNarrow = mix(w * 0.02, w * 0.22, p);
+  const flight = easeInOut(p);
+  const roadTop = mix(h * 0.6, h * 0.36, flight);
+  const roadWide = mix(w * 0.05, w * 1.75, flight);
+  const roadNarrow = mix(w * 0.015, w * 0.31, flight);
   ctx.fillStyle = "#bdb09c";
   ctx.beginPath();
   ctx.moveTo(w * 0.5 - roadNarrow, roadTop);
@@ -187,15 +264,17 @@ function drawRestaurant(p) {
   const { w, h } = state;
   const appear = ease(clamp((p - 0.08) / 0.18));
   if (appear <= 0.01) return;
-  const t = ease(clamp((p - 0.18) / 0.34));
-  const scale = mix(0.58, 1.45, t);
-  const x = w * 0.58 - w * 0.08 * t;
-  const y = mix(h * 0.47, h * 0.23, t);
+  const t = easeInOut(clamp((p - 0.16) / 0.48));
+  const pass = ease(clamp((p - 0.74) / 0.18));
+  const closeupCover = ease(clamp((p - 0.46) / 0.16));
+  const scale = mix(0.48, 2.08, t) + pass * 0.5;
+  const x = w * 0.58 - w * 0.15 * t - w * 0.1 * pass;
+  const y = mix(h * 0.5, h * 0.12, t) - h * 0.1 * pass;
   const bw = Math.min(w * 0.62 * scale, w * 1.05);
   const bh = h * 0.34 * scale;
 
   ctx.save();
-  ctx.globalAlpha = appear;
+  ctx.globalAlpha = appear * mix(1, 0.18, Math.max(pass, closeupCover));
   ctx.translate(x, y);
   ctx.fillStyle = "rgba(22, 28, 22, 0.24)";
   ctx.beginPath();
@@ -450,13 +529,14 @@ function drawPhone(x, y, width, height, label, accent, t) {
 
 function drawInterfaceScenes(p) {
   const { w, h } = state;
-  const phoneIn = ease(clamp((p - 0.42) / 0.34));
-  const qrIn = ease(clamp((p - 0.28) / 0.28)) * (1 - ease(clamp((p - 0.66) / 0.22)));
+  const phoneIn = easeInOut(clamp((p - 0.58) / 0.34));
+  const closeupCover = ease(clamp((p - 0.46) / 0.16));
+  const qrIn = easeInOut(clamp((p - 0.38) / 0.26)) * (1 - ease(clamp((p - 0.48) / 0.12)));
 
   if (qrIn > 0.01) {
-    const size = mix(96, Math.min(w, h) * 0.42, qrIn);
-    const x = mix(w * 0.76, w * 0.5, qrIn);
-    const y = mix(h * 0.62, h * 0.5, qrIn);
+    const size = mix(78, Math.min(w, h) * 0.46, qrIn);
+    const x = mix(w * 0.68, w * 0.5, qrIn);
+    const y = mix(h * 0.66, h * 0.5, qrIn);
     ctx.globalAlpha = qrIn;
     ctx.fillStyle = "rgba(255, 250, 242, 0.95)";
     roundedRect(x - size / 2, y - size / 2, size, size, 12);
@@ -470,19 +550,19 @@ function drawInterfaceScenes(p) {
     ctx.globalAlpha = 1;
   }
 
-  if (phoneIn > 0.01) {
-    ctx.globalAlpha = phoneIn;
-    const mainW = Math.min(220, w * 0.34);
+  if (phoneIn > 0.01 && closeupCover < 0.98) {
+    ctx.globalAlpha = phoneIn * (1 - closeupCover);
+    const mainW = Math.min(250, w * 0.42);
     const mainH = mainW * 1.9;
-    drawPhone(mix(w * 1.12, w * 0.68, phoneIn), h * 0.52, mainW, mainH, "Table 12", "#4b8a55", phoneIn);
-    drawPhone(mix(-w * 0.12, w * 0.32, phoneIn), h * 0.58, mainW * 0.86, mainH * 0.86, "Kitchen", "#c94334", 1 - phoneIn);
+    drawPhone(mix(w * 1.18, w * 0.68, phoneIn), h * 0.52, mainW, mainH, "Table 12", "#4b8a55", phoneIn);
+    drawPhone(mix(-w * 0.22, w * 0.31, phoneIn), h * 0.59, mainW * 0.86, mainH * 0.86, "Kitchen", "#c94334", 1 - phoneIn);
     ctx.globalAlpha = 1;
   }
 }
 
 function drawSignalLines(p) {
   const { w, h } = state;
-  const t = ease(clamp((p - 0.56) / 0.34));
+  const t = ease(clamp((p - 0.66) / 0.28));
   if (t <= 0.01) return;
   ctx.globalAlpha = t * 0.78;
   ctx.lineWidth = 2;
@@ -514,24 +594,75 @@ function drawVignette(p) {
   ctx.fillRect(0, 0, w, h);
 }
 
+function drawServiceCloseup(p) {
+  const t = easeInOut(clamp((p - 0.48) / 0.24));
+  if (t <= 0.01 || !serviceCloseup.complete || !serviceCloseup.naturalWidth) return;
+
+  ctx.save();
+  ctx.globalAlpha = t;
+  drawCoverImage(
+    serviceCloseup,
+    mix(1.18, 1.03, t),
+    mix(0.08, -0.03, t) + state.pointerX * 0.006,
+    mix(0.05, -0.02, t) + state.pointerY * 0.004
+  );
+  ctx.fillStyle = `rgba(12, 22, 16, ${mix(0.32, 0.18, t)})`;
+  ctx.fillRect(0, 0, state.w, state.h);
+  ctx.restore();
+}
+
+function drawDroneFrame(p) {
+  const { w, h } = state;
+  const speed = Math.abs(state.target - state.progress);
+  const sweep = ease(clamp((p - 0.1) / 0.8));
+  const closeup = ease(clamp((p - 0.5) / 0.22));
+  ctx.globalAlpha = (0.16 + speed * 1.8) * (1 - closeup);
+  const gradient = ctx.createLinearGradient(0, 0, w, h);
+  gradient.addColorStop(0, "rgba(255,255,255,0)");
+  gradient.addColorStop(0.5, "rgba(255,255,255,0.2)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.save();
+  ctx.translate(w * (sweep - 0.15), h * 0.05);
+  ctx.rotate(-0.16);
+  ctx.fillRect(-w * 0.16, 0, w * 0.12, h * 1.2);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
 function render() {
   if (reducedMotion) state.progress = state.target;
-  else state.progress += (state.target - state.progress) * 0.08;
+  else state.progress += (state.target - state.progress) * 0.065;
 
   const p = state.progress;
+  const camera = getFlightCamera(p);
   ctx.clearRect(0, 0, state.w, state.h);
-  drawBackdrop(p);
-  drawWorldLayers(p);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  drawBackdrop(p, camera);
+  drawWorldLayers(p, camera);
   drawRoad(p);
   drawRestaurant(p);
+  drawServiceCloseup(p);
   drawInterfaceScenes(p);
   drawSignalLines(p);
+  drawDroneFrame(p);
   drawVignette(p);
 
   const active = Math.min(rails.length - 1, Math.floor(p * rails.length));
   rails.forEach((rail, index) => rail.classList.toggle("active", index === active));
-  heroCopy.style.opacity = String(clamp(1 - p * 2.2, 0, 1));
-  heroCopy.style.transform = `translateY(${-p * 34}px)`;
+  if (activeScene !== active) {
+    activeScene = active;
+    const step = sceneSteps[active];
+    sceneCaptionNumber.textContent = step.number;
+    sceneCaptionTitle.textContent = step.title;
+    sceneCaptionBody.textContent = step.body;
+  }
+  heroCopy.style.opacity = String(clamp(1 - p * 4.2, 0, 1));
+  heroCopy.style.transform = `translateY(${-p * 42}px)`;
+  sceneRail.style.opacity = String(mix(1, 0.34, ease(clamp((p - 0.28) / 0.42))));
+  sceneCaption.style.opacity = String(mix(0.98, 0.88, ease(clamp((p - 0.58) / 0.28))));
+  sceneCaption.style.transform = `translateY(${mix(0, -10, ease(clamp((p - 0.58) / 0.28)))}px)`;
 
   requestAnimationFrame(render);
 }
